@@ -154,7 +154,7 @@ jobs:
 
   release:
     environment: release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.repository != 'brofranks/headwire-draft' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build, verify-macos]
     runs-on: ubuntu-26.04
     permissions:
