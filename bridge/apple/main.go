@@ -71,8 +71,13 @@ func guard(f func() error) (out *C.char) {
 // prepare is the HeadwirePrepare* entry point of this platform, given its
 // loaded configuration.
 func prepare(cfg *config.Config, handle *C.int32_t, settings **C.char) error {
-	h, s, err := provider.Prepare(cfg)
+	h, _, err := provider.Prepare(cfg)
 	if err != nil {
+		return err
+	}
+	s, err := provider.ConfigureDNS(h, baseDNS)
+	if err != nil {
+		provider.Stop(h, nil)
 		return err
 	}
 	js, _ := json.Marshal(s)
@@ -99,6 +104,19 @@ func HeadwireStatus(handle C.int32_t, field *C.char, out **C.char) *C.char {
 			return err
 		}
 		*out = C.CString(s)
+		return nil
+	})
+}
+
+//export HeadwireDNSSettings
+func HeadwireDNSSettings(handle C.int32_t, out **C.char) *C.char {
+	return guard(func() error {
+		s, err := provider.DNSSettings(int32(handle))
+		if err != nil {
+			return err
+		}
+		js, _ := json.Marshal(s)
+		*out = C.CString(string(js))
 		return nil
 	})
 }

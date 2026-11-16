@@ -27,6 +27,7 @@ import (
 	"github.com/tailscale/wireguard-go/device"
 	"github.com/tailscale/wireguard-go/tun"
 	"go4.org/netipx"
+	"tailscale.com/control/controlknobs"
 	"tailscale.com/health"
 	"tailscale.com/net/dns"
 	"tailscale.com/net/netmon"
@@ -63,6 +64,9 @@ type Options struct {
 	// Start takes ownership of Tun and closes it on failure. After a
 	// successful Start, Close releases it.
 	Tun tun.Device
+	// DNS supplies an embedder-owned OS settings adapter. Nil uses the
+	// kernel configurator, or no host DNS for other injected devices.
+	DNS dns.OSConfigurator
 }
 
 // Engine is a running headwire node.
@@ -79,9 +83,10 @@ type Engine struct {
 	tun    *tstun.Wrapper
 	mc     *magicsock.Conn
 
-	dnsMu   sync.Mutex         // serializes DNS updates and restoration
-	hostDNS dns.OSConfigurator // set when a kernel TUN has DNS
-	unwatch func()             // stops the link-change callback
+	dnsManager *dns.Manager
+	dnsService *dnsService
+	hostDNS    dns.OSConfigurator // restores DNS before stopping local delivery
+	unwatch    func()             // stops the link-change callback
 
 	mu    sync.Mutex       // serializes Reload and repick
 	epsMu sync.Mutex       // guards eps
@@ -116,6 +121,9 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 
 	e.bus = eventbus.New()
 	tracker := health.NewTracker(e.bus)
+	if opts.Tun != nil {
+		e.hostDNS = opts.DNS
+	}
 	dev, rtr, err := e.attach(cfg, tracker, opts.Tun)
 	if err != nil {
 		return nil, err
@@ -124,9 +132,15 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 	e.dialer.SetNetMon(e.netMon)
 	// ListenPort is configured explicitly when fixed-endpoint peers need to
 	// name it. An omitted or zero port lets the OS choose.
+	knobs := new(controlknobs.Knobs)
+	knobs.UserDialUseRoutes.Store(true)
+	knobs.ForceRegisterMagicDNSIPv4Only.Store(!slices.ContainsFunc(cfg.Interface.Addresses,
+		func(p netip.Prefix) bool { return p.Addr().Is6() }))
+	knobs.ScopeQuad100OnMacOS.Store(true)
 	conf := wgengine.Config{
 		Tun:           dev,
 		Router:        rtr,
+		ControlKnobs:  knobs,
 		NetMon:        e.netMon,
 		HealthTracker: tracker,
 		Metrics:       new(usermetric.Registry),
@@ -142,8 +156,14 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 				e.tun = s
 			case *magicsock.Conn:
 				e.mc = s
+			case *dns.Manager:
+				e.dnsManager = s
 			}
 		},
+	}
+	if e.hostDNS != nil {
+		e.hostDNS = &managedDNS{os: e.hostDNS, servers: cfg.DNSServiceIPs()}
+		conf.DNS = e.hostDNS
 	}
 	if e.eng, err = wgengine.NewUserspaceEngine(logf, conf); err != nil {
 		return nil, err
@@ -160,6 +180,12 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 	// cannot detect an IPv6-only fallback.
 	if port := cfg.Interface.ListenPort; port != 0 && e.mc.LocalPort() != port {
 		return nil, fmt.Errorf("UDP port %d: address already in use", port)
+	}
+	if servers := cfg.DNSServiceIPs(); len(servers) > 0 {
+		e.dnsService, err = newDNSService(e.dnsManager, e.tun, servers, MTU(cfg), logf)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// The wrapper buffers all traffic until told the stack above it is ready.
 	e.tun.Start()
@@ -195,26 +221,10 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 	if err := e.reconfig(cfg); err != nil {
 		return nil, err
 	}
-	// The interface has its address by now, which resolved requires. The
-	// resolvers go to the OS as configured: the engine's DNS manager would
-	// route some public addresses through a forwarder headwire does not run.
-	set := func() error {
-		return e.setDNS(dns.OSConfig{Nameservers: cfg.Interface.DNS, SearchDomains: cfg.Interface.DNSSearch})
-	}
-	if err := set(); err != nil {
-		return nil, err
-	}
-	e.unwatch = e.netMon.RegisterChangeCallback(func(d *netmon.ChangeDelta) {
+	e.unwatch = e.netMon.RegisterChangeCallback(func(*netmon.ChangeDelta) {
 		// Callbacks run unordered, so take the monitor's latest state rather
 		// than the change that triggered this one.
 		e.repick(e.netMon.InterfaceState)
-		// NetworkManager restarts and suspend/resume clear resolved's
-		// per-link settings, so a major link change re-applies them.
-		if d.RebindLikelyRequired && d.AnyInterfaceUp() {
-			if err := set(); err != nil {
-				e.logf("dns: re-apply after link change: %v", err)
-			}
-		}
 	})
 	// A change between the state read above and the registration is picked up
 	// here.
@@ -297,9 +307,8 @@ func (e *Engine) attach(
 		return dev, nil, nil
 	}
 	// The process that owns the interface sets the host's DNS. Without a
-	// nameserver no configurator exists, so the host's resolver setup is
-	// neither probed nor touched.
-	if len(cfg.Interface.DNS) > 0 {
+	// nameserver or local DNS policy, its resolver setup is left alone.
+	if len(cfg.Interface.DNS)+len(cfg.DNS.Hosts)+len(cfg.DNS.Routes) > 0 {
 		if e.hostDNS, err = newOSConfigurator(e, tracker, dev); err != nil {
 			return nil, nil, err
 		}
@@ -375,13 +384,13 @@ func (e *Engine) checkIPv6(old, cfg *config.Config) error {
 
 // reconfig applies the interface address and the routes implied by every
 // peer's AllowedIPs. Peers are not configured here: the engine pulls them
-// lazily through peerConfig. The engine's DNS manager gets nothing, because
-// Start sets host DNS itself.
+// lazily through peerConfig. The DNS manager applies the static resolver
+// policy, and wgengine applies it again after a major link change.
 func (e *Engine) reconfig(cfg *config.Config) error {
 	return e.eng.Reconfig(
 		&wgcfg.Config{PrivateKey: cfg.Interface.PrivateKey, Addresses: cfg.Interface.Addresses},
 		&router.Config{LocalAddrs: hostAddrs(cfg.Interface.Addresses), Routes: Routes(cfg)},
-		&dns.Config{})
+		dnsConfig(cfg))
 }
 
 // hostAddrs narrows interface addresses to the single addresses this node
@@ -427,11 +436,14 @@ func (e *Engine) setPeerRoutes(st *state) {
 	e.eng.SetPeerRoutes(native4, native6, routes)
 }
 
-// Routes is what the host must route into the tunnel: each interface subnet
-// and every peer's AllowedIPs. An embedder that owns the interface installs
-// these itself.
+// Routes is what the host must route into the tunnel: each interface subnet,
+// every peer's AllowedIPs and the local DNS endpoints. An embedder that owns
+// the interface installs these itself.
 func Routes(cfg *config.Config) []netip.Prefix {
 	var routes []netip.Prefix
+	for _, ip := range cfg.DNSServiceIPs() {
+		routes = append(routes, netip.PrefixFrom(ip, ip.BitLen()))
+	}
 	for _, a := range cfg.Interface.Addresses {
 		if !a.IsSingleIP() {
 			routes = append(routes, a.Masked())
@@ -483,8 +495,10 @@ func (e *Engine) Reload(cfg *config.Config) error {
 	before, after := old.cfg.Interface, cfg.Interface
 	before.MTU, after.MTU = MTU(old.cfg), MTU(cfg)
 	after.AllowIn = before.AllowIn // applied live below
-	if !reflect.DeepEqual(after, before) || !reflect.DeepEqual(cfg.Regions, old.cfg.Regions) {
-		return errors.New("reload can only change [Peer] sections and AllowIn, so restart to apply other [Interface] or [DERPRegion] changes")
+	if !reflect.DeepEqual(after, before) ||
+		!reflect.DeepEqual(cfg.Regions, old.cfg.Regions) ||
+		!reflect.DeepEqual(cfg.DNS, old.cfg.DNS) {
+		return errors.New("reload can only change [Peer] sections and AllowIn, so restart to apply other [Interface], [DERPRegion] or [DNS] changes")
 	}
 	for _, p := range cfg.Peers {
 		was, ok := old.peers[p.PublicKey]
@@ -545,29 +559,24 @@ func (e *Engine) apply(old, st *state) {
 	}
 }
 
-// setDNS serializes resolver updates with shutdown restoration.
-func (e *Engine) setDNS(c dns.OSConfig) error {
-	e.dnsMu.Lock()
-	defer e.dnsMu.Unlock()
-	if e.hostDNS == nil {
-		return nil
-	}
-	return e.hostDNS.SetDNS(c)
-}
-
 // Close tears the node down in reverse dependency order.
 func (e *Engine) Close() {
 	if e.unwatch != nil {
 		e.unwatch()
 	}
-	e.dnsMu.Lock()
 	if e.hostDNS != nil {
-		e.hostDNS.Close()
-		e.hostDNS = nil
+		if err := e.hostDNS.Close(); err != nil {
+			e.logf("DNS restore: %v", err)
+		}
 	}
-	e.dnsMu.Unlock()
+	if e.dnsService != nil {
+		e.dnsService.stop()
+	}
 	if e.eng != nil {
 		e.eng.Close()
+	}
+	if e.dnsService != nil {
+		e.dnsService.wait()
 	}
 	if e.netMon != nil {
 		e.netMon.Close()

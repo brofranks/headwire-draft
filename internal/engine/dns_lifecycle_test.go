@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"errors"
+	"net"
 	"sync"
 	"testing"
 
@@ -36,18 +38,19 @@ func (d *gatedDNS) Close() error {
 
 func TestDNSRestorationWaitsForUpdate(t *testing.T) {
 	d := &gatedDNS{entered: make(chan struct{}), release: make(chan struct{})}
-	e := &Engine{hostDNS: d, unwatch: func() {}}
+	m := &managedDNS{os: d}
+	e := &Engine{hostDNS: m}
 	d.assertLocked = func() {
 		t.Helper()
-		if e.dnsMu.TryLock() {
-			e.dnsMu.Unlock()
+		if m.mu.TryLock() {
+			m.mu.Unlock()
 			t.Error("DNS configurator called without the lifecycle lock")
 		}
 	}
 	updated, closed := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(updated)
-		if err := e.setDNS(dns.OSConfig{}); err != nil {
+		if err := m.SetDNS(dns.OSConfig{}); err != nil {
 			t.Error(err)
 		}
 	}()
@@ -56,8 +59,8 @@ func TestDNSRestorationWaitsForUpdate(t *testing.T) {
 	close(d.release)
 	<-updated
 	<-closed
-	if err := e.setDNS(dns.OSConfig{}); err != nil {
-		t.Fatal(err)
+	if err := m.SetDNS(dns.OSConfig{}); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("SetDNS after Close = %v", err)
 	}
 	if len(d.events) != 2 || d.events[0] != "set" || d.events[1] != "close" {
 		t.Fatalf("resolver events: %v", d.events)

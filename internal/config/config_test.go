@@ -25,6 +25,8 @@ const (
 	region = "[DERPRegion]\nID = 1\nNodes = derp1.example.com, derp2.example.com\n"
 	peer   = "[Peer]\nPublicKey = " + keyB + "\nDiscoKey = " + keyC + "\nAllowedIPs = 100.64.0.2/32, 10.0.0.0/8\n"
 	peer2  = "[Peer]\nPublicKey = " + keyD + "\nDiscoKey = " + keyE + "\nAllowedIPs = 100.64.0.3/32\n"
+	dnsSec = "[DNS]\nHost = VM.Example 192.0.2.2 fd00::2\nHost = vm.example, 192.0.2.3\nHost = db.corp.example 192.0.2.4\n" +
+		"Route = corp.example 192.0.2.53, fd00::53\nRoute = lab.example\n"
 )
 
 // selfPub is the public key of iface's PrivateKey.
@@ -134,6 +136,21 @@ func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		name, src, want string
 	}{
+		{"duplicate dns section", iface + dnsSec + "[DNS]\n", "line 10: duplicate [DNS] section"},
+		{"unknown dns key", iface + "[DNS]\nServer = 192.0.2.53\n", "line 5: unknown key"},
+		{"host without address", iface + "[DNS]\nHost = vm.example\n", "line 5: Host: expected a name followed by addresses"},
+		{"empty route", iface + "[DNS]\nRoute =\n", "line 5: Route: expected a name followed by addresses"},
+		{"host name is an address", iface + "[DNS]\nHost = 192.0.2.1 192.0.2.2\n", "Host: invalid name \"192.0.2.1\""},
+		{"host root name", iface + "[DNS]\nHost = . 192.0.2.2\n", "Host: invalid name \".\""},
+		{"route root suffix", iface + "[DNS]\nRoute = . 192.0.2.53\n", "Route: invalid name \".\""},
+		{"host bad label", iface + "[DNS]\nHost = " + strings.Repeat("a", 64) + ".example 192.0.2.2\n", "Host: invalid name \"" + strings.Repeat("a", 64) + ".example\""},
+		{"host bad address", iface + "[DNS]\nHost = vm.example 192.0.2.2/32\n", "Host: invalid address \"192.0.2.2/32\""},
+		{"host zone", iface + "[DNS]\nHost = vm.example fe80::1%eth0\n", "Host: zone is only valid"},
+		{"route bad address", iface + "[DNS]\nRoute = corp.example dns.example\n", "Route: invalid address \"dns.example\""},
+		{"duplicate host address", iface + "[DNS]\nHost = vm.example 192.0.2.2\nHost = VM.example 192.0.2.2\n", "line 6: Host: duplicate address 192.0.2.2 for vm.example"},
+		{"duplicate route", iface + "[DNS]\nRoute = corp.example 192.0.2.53\nRoute = corp.example.\n", "line 6: Route: duplicate suffix corp.example"},
+		{"route equals host", iface + "[DNS]\nHost = vm.example 192.0.2.2\nRoute = vm.example 192.0.2.53\n", "line 6: Route: vm.example is a Host name or lies beneath one"},
+		{"route beneath host", iface + "[DNS]\nRoute = a.vm.example 192.0.2.53\nHost = vm.example 192.0.2.2\n", "line 5: Route: a.vm.example is a Host name or lies beneath one"},
 		{"no interface", peer, "missing [Interface]"},
 		{"key outside section", "PrivateKey = x\n", "line 1: key outside of any section"},
 		{"unknown section", iface + "[Foo]\n", "unknown section [Foo]"},

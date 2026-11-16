@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 
+	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/key"
 )
 
@@ -21,6 +23,23 @@ func validate(cfg *Config, peerLines []int) error {
 	natives := map[bool]int{} // is IPv4 -> interface address count
 	for _, a := range cfg.Interface.Addresses {
 		natives[a.Addr().Is4()]++
+	}
+	for _, ip := range []netip.Addr{tsaddr.TailscaleServiceIP(), tsaddr.TailscaleServiceIPv6()} {
+		if slices.ContainsFunc(cfg.Interface.DNS, func(upstream netip.Addr) bool { return upstream.Unmap() == ip }) {
+			return fmt.Errorf("DNS %s is the node's local resolver, not an upstream", ip)
+		}
+		for suffix, upstreams := range cfg.DNS.Routes {
+			if slices.ContainsFunc(upstreams, func(upstream netip.Addr) bool { return upstream.Unmap() == ip }) {
+				return fmt.Errorf("route %s: %s is the node's local resolver, not an upstream", suffix, ip)
+			}
+		}
+	}
+	for _, ip := range cfg.DNSServiceIPs() {
+		for _, address := range cfg.Interface.Addresses {
+			if address.Addr() == ip {
+				return fmt.Errorf("DNS service %s cannot be an [Interface] Address", ip)
+			}
+		}
 	}
 	pubs := map[key.NodePublic]int{}    // peer public key -> line
 	discos := map[key.DiscoPublic]int{} // peer disco key -> line

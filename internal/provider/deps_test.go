@@ -19,7 +19,7 @@ var badDeps = map[string]string{
 	"database/sql/driver":                    "no SQL database",
 	"tailscale.com/feature/capture":          "no debug packet capture",
 	"tailscale.com/wgengine/router/osrouter": "the host owns addresses and routes",
-	"tailscale.com/wgengine/netstack":        "no userspace TCP/IP stack",
+	"tailscale.com/wgengine/netstack":        "DNS has its own gVisor stack",
 	"tailscale.com/ipn/ipnlocal":             "no Tailscale local backend",
 	"tailscale.com/control/controlclient":    "no control-plane client",
 }
@@ -34,7 +34,7 @@ func TestIOSDeps(t *testing.T) {
 
 func TestMacOSDeps(t *testing.T) {
 	bad := map[string]string{
-		"tailscale.com/wgengine/netstack":     "no userspace TCP/IP stack",
+		"tailscale.com/wgengine/netstack":     "DNS has its own gVisor stack",
 		"tailscale.com/ipn/ipnlocal":          "no Tailscale local backend",
 		"tailscale.com/control/controlclient": "no control-plane client",
 	}
