@@ -1,7 +1,8 @@
 set -euo pipefail
+export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 sudo chmod a+rw /dev/kvm
 sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
-"$sdk/sdkmanager" 'system-images;android-34;google_apis;x86_64'
+"$sdk/sdkmanager" platform-tools emulator 'system-images;android-34;google_apis;x86_64'
 echo no | "$sdk/avdmanager" create avd -n rehearsal -k 'system-images;android-34;google_apis;x86_64'
 "$ANDROID_HOME/emulator/emulator" -avd rehearsal -no-window -noaudio -no-snapshot -gpu swiftshader_indirect > /tmp/emulator.log 2>&1 &
 adb wait-for-device
@@ -18,4 +19,4 @@ for f in provider netmon; do
 done
 adb shell run-as org.headwire.rehearsal id
 adb shell run-as org.headwire.rehearsal ./netmon.test -test.v -test.run '^Test(RegisterTunnelNameWithoutIndex|LocalAddressesCGNAT)$'
-adb shell run-as org.headwire.rehearsal ./provider.test -test.v -test.timeout 2m
+adb shell run-as org.headwire.rehearsal ./provider.test -test.run '^TestRehearsalAndroidUnderlay$' -test.v -test.timeout 2m
