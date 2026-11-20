@@ -1,11 +1,16 @@
-set -euo pipefail
+set -euxo pipefail
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 sudo chmod a+rw /dev/kvm
+go clean -cache
+df -h "$HOME"
 sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
 "$sdk/sdkmanager" platform-tools emulator 'system-images;android-34;google_apis;x86_64'
 echo no | "$sdk/avdmanager" create avd -n rehearsal -k 'system-images;android-34;google_apis;x86_64'
-"$ANDROID_HOME/emulator/emulator" -avd rehearsal -no-window -noaudio -no-snapshot -gpu swiftshader_indirect > /tmp/emulator.log 2>&1 &
-adb wait-for-device
+"$ANDROID_HOME/emulator/emulator" -avd rehearsal -no-window -noaudio -no-snapshot -partition-size 2048 -gpu swiftshader_indirect > /tmp/emulator.log 2>&1 &
+emulator_pid=$!
+trap 'tail -50 /tmp/emulator.log' EXIT
+timeout 120 adb wait-for-device
+kill -0 "$emulator_pid"
 timeout 180 bash -c 'until [[ $(adb shell getprop sys.boot_completed | tr -d "\\r") == 1 ]]; do sleep 2; done'
 bt=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)
 echo '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.headwire.rehearsal"><uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28"/><uses-permission android:name="android.permission.INTERNET"/><application android:hasCode="false" android:debuggable="true"/></manifest>' > /tmp/AndroidManifest.xml

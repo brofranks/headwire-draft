@@ -31,6 +31,12 @@ jobs:
           go test -c -o rehearsal/engine.test.exe ./internal/engine
           cp wintun/bin/amd64/wintun.dll rehearsal/
           rehearsal/engine.test.exe -test.v -test.run '^TestRehearsalWintunSubnet$' -test.timeout 3m
+      - name: Verify candidate route teardown
+        shell: pwsh
+        run: |
+          if (Get-NetRoute -DestinationPrefix 'fd42::10/124' -ErrorAction SilentlyContinue) {
+            throw "requested route survived engine shutdown"
+          }
       - name: Verify shipped route regression
         run: |
           source scripts/goflags.sh
