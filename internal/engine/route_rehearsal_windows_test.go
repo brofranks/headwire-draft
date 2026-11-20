@@ -1,5 +1,5 @@
 package engine
-import ("fmt";"net";"net/netip";"testing";"time";"os/exec";"io";"slices";"tailscale.com/types/key")
+import ("fmt";"net";"net/netip";"testing";"time";"os/exec";"io";"slices";"tailscale.com/types/key"; _ "tailscale.com/wgengine/router/osrouter")
 func TestRehearsalWintunSubnet(t *testing.T){
  a:=node{key.NewNode(),netip.MustParsePrefix("fd42::10/128"),freePort(t)}
  b:=node{key.NewNode(),netip.MustParsePrefix("fd42::1a/128"),freePort(t)}

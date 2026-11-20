@@ -48,6 +48,8 @@ jobs:
           export GOOS=android GOARCH=amd64 CGO_ENABLED=1
           export CC="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
           go test -c -o rehearsal/provider.test ./internal/provider
-          (cd fork && go test -c -o ../rehearsal/netmon.test ./net/netmon)
+          printf 'package netmon\n' > "$RUNNER_TEMP/empty.go"
+          python3 -c 'import json,os; print(json.dumps({"Replace":{os.path.abspath("fork/net/netmon/interfaces_linux_test.go"):os.environ["RUNNER_TEMP"]+"/empty.go"}}))' > "$RUNNER_TEMP/android-overlay.json"
+          (cd fork && go test -overlay "$RUNNER_TEMP/android-overlay.json" -c -o ../rehearsal/netmon.test ./net/netmon)
       - name: Boot emulator and run as app UID
         run: bash rehearsal/android.sh
