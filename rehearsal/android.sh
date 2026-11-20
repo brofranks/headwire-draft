@@ -29,5 +29,7 @@ for f in provider netmon; do
  adb shell run-as org.headwire.rehearsal chmod 700 "$f.test"
 done
 adb shell run-as org.headwire.rehearsal id
-adb shell run-as org.headwire.rehearsal ./netmon.test -test.v -test.run '^Test(RegisterTunnelNameWithoutIndex|LocalAddressesCGNAT)$'
+for name in TestRegisterTunnelNameWithoutIndex TestLocalAddressesCGNAT; do
+ adb shell run-as org.headwire.rehearsal ./netmon.test -test.v -test.run "^$name$"
+done
 adb shell run-as org.headwire.rehearsal ./provider.test -test.run '^TestRehearsalAndroidUnderlay$' -test.v -test.timeout 2m
