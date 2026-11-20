@@ -5,8 +5,14 @@ go clean -cache
 df -h "$HOME"
 sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
 "$sdk/sdkmanager" platform-tools emulator 'system-images;android-34;google_apis;x86_64'
-echo no | "$sdk/avdmanager" create avd -n rehearsal -k 'system-images;android-34;google_apis;x86_64'
-"$ANDROID_HOME/emulator/emulator" -avd rehearsal -no-window -noaudio -no-snapshot -partition-size 2048 -gpu swiftshader_indirect > /tmp/emulator.log 2>&1 &
+export ANDROID_USER_HOME="$RUNNER_TEMP/android-user"
+export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+mkdir -p "$ANDROID_AVD_HOME"
+"$sdk/avdmanager" create avd --force -n rehearsal -d pixel_2 -p "$ANDROID_AVD_HOME/rehearsal.avd" -k 'system-images;android-34;google_apis;x86_64'
+test -s "$ANDROID_AVD_HOME/rehearsal.avd/config.ini"
+printf 'avd.ini.encoding=UTF-8\npath=%s/rehearsal.avd\ntarget=android-34\n' "$ANDROID_AVD_HOME" > "$ANDROID_AVD_HOME/rehearsal.ini"
+emulator -list-avds | grep -Fx rehearsal
+"$ANDROID_HOME/emulator/emulator" -avd rehearsal -no-window -noaudio -no-snapshot -partition-size 2048 -gpu swiftshader > /tmp/emulator.log 2>&1 &
 emulator_pid=$!
 trap 'tail -50 /tmp/emulator.log' EXIT
 timeout 120 adb wait-for-device
