@@ -31,6 +31,17 @@ jobs:
           go test -c -o rehearsal/engine.test.exe ./internal/engine
           cp wintun/bin/amd64/wintun.dll rehearsal/
           rehearsal/engine.test.exe -test.v -test.run '^TestRehearsalWintunSubnet$' -test.timeout 3m
+      - name: Verify shipped route regression
+        run: |
+          source scripts/goflags.sh
+          go mod edit -dropreplace=tailscale.com
+          go mod edit -replace=tailscale.com=github.com/brofranks/tailscale@v1.104.7-headwire.3
+          go test -c -o rehearsal/shipped.test.exe ./internal/engine
+          if rehearsal/shipped.test.exe -test.v -test.run '^TestRehearsalWintunSubnet$' -test.timeout 3m > shipped.log 2>&1; then
+            echo "shipped fork unexpectedly retained the subnet route"
+            exit 1
+          fi
+          grep 'requested route missing' shipped.log
   android:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
