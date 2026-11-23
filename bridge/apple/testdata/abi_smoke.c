@@ -31,6 +31,7 @@ int main(void) {
 	int bad = refused("prepare ../x", HeadwirePrepareProfile("../x", &handle, &settings));
 	bad |= refused("start unprepared", HeadwireStart(7, -1));
 	bad |= refused("status unknown", HeadwireStatus(7, "", &out));
+	bad |= refused("DNS settings unknown", HeadwireDNSSettings(7, &out));
 	HeadwireNetworkChanged(7, "en0");
 	HeadwireStop(7);
 	char *argv[] = {"version"};

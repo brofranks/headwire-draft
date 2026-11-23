@@ -11,6 +11,7 @@ require (
 	github.com/tailscale/wireguard-go v0.0.0-20261106233718-9e0ab45c16ca
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.50.0
 	golang.zx2c4.com/wireguard/windows v1.0.1
 	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72
@@ -104,7 +105,6 @@ require (
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260811152304-ee035b5b010f // indirect
 	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/telemetry v0.0.0-20261010193011-f71dc92da45e // indirect
 	golang.org/x/term v0.47.0 // indirect
@@ -120,7 +120,7 @@ require (
 	mvdan.cc/sh/v3 v3.14.1 // indirect
 )
 
-replace tailscale.com => github.com/brofranks/tailscale v1.104.7-headwire.5
+replace tailscale.com => github.com/brofranks/tailscale v1.104.7-headwire.6
 
 tool (
 	github.com/google/go-licenses/v2

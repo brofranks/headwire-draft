@@ -17,6 +17,10 @@ func TestWindowsHostDNS(t *testing.T) {
 	if err := checkKernelConfig(cfg); err == nil || !strings.Contains(err.Error(), "DNS nameservers") {
 		t.Fatalf("host DNS rejection: %v", err)
 	}
+	cfg = &config.Config{DNS: config.DNS{Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.53")}}}
+	if err := checkKernelConfig(cfg); err == nil || !strings.Contains(err.Error(), "[DNS]") {
+		t.Fatalf("[DNS] rejection: %v", err)
+	}
 }
 
 func TestWindowsHostDefaultRoute(t *testing.T) {

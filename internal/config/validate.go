@@ -1,9 +1,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 
+	"tailscale.com/net/dns/publicdns"
 	"tailscale.com/types/key"
 )
 
@@ -21,6 +24,32 @@ func validate(cfg *Config, peerLines []int) error {
 	natives := map[bool]int{} // is IPv4 -> interface address count
 	for _, a := range cfg.Interface.Addresses {
 		natives[a.Addr().Is4()]++
+	}
+	if cfg.needsDNSService() && len(cfg.DNS.Addresses) == 0 {
+		return errors.New("[DNS] Address is required for Host, Route or a DoH-only DNS server")
+	}
+	for _, ip := range cfg.DNS.Addresses {
+		if natives[ip.Is4()] == 0 {
+			return fmt.Errorf("[DNS] Address %s requires an [Interface] Address of the same family", ip)
+		}
+		if slices.ContainsFunc(cfg.Interface.Addresses, func(p netip.Prefix) bool { return p.Addr() == ip }) {
+			return fmt.Errorf("[DNS] Address %s cannot be an [Interface] Address", ip)
+		}
+		if slices.ContainsFunc(cfg.Interface.DNS, func(upstream netip.Addr) bool { return upstream.Unmap() == ip }) {
+			return fmt.Errorf("DNS %s is the node's local resolver, not an upstream", ip)
+		}
+		for suffix, upstreams := range cfg.DNS.Routes {
+			if slices.ContainsFunc(upstreams, func(upstream netip.Addr) bool { return upstream.Unmap() == ip }) {
+				return fmt.Errorf("route %s: %s is the node's local resolver, not an upstream", suffix, ip)
+			}
+		}
+		// The resolver takes every packet to its address, so a peer at that
+		// address would be unreachable.
+		for i, p := range cfg.Peers {
+			if slices.Contains(p.AllowedIPs, netip.PrefixFrom(ip, ip.BitLen())) {
+				return fmt.Errorf("line %d: [Peer] AllowedIPs %s is the [DNS] Address", peerLines[i], ip)
+			}
+		}
 	}
 	pubs := map[key.NodePublic]int{}    // peer public key -> line
 	discos := map[key.DiscoPublic]int{} // peer disco key -> line
@@ -69,4 +98,11 @@ func validate(cfg *Config, peerLines []int) error {
 		}
 	}
 	return nil
+}
+
+// needsDNSService reports whether DNS policy can require the node's resolver:
+// local records or routes, or a default nameserver reachable only over DoH.
+func (cfg *Config) needsDNSService() bool {
+	return len(cfg.DNS.Hosts)+len(cfg.DNS.Routes) > 0 ||
+		slices.ContainsFunc(cfg.Interface.DNS, publicdns.IPIsDoHOnlyServer)
 }

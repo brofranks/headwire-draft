@@ -29,6 +29,11 @@ char *HeadwireStart(int32_t handle, int32_t tun_fd);
 // Private and preshared keys are never included.
 char *HeadwireStatus(int32_t handle, const char *field, char **out);
 
+// Returns manager-generated network settings after Start and on network/DNS
+// changes. Apply these before reporting the tunnel ready. Strings use the same
+// ownership as HeadwirePrepare*. Errors leave no replacement settings to apply.
+char *HeadwireDNSSettings(int32_t handle, char **settings);
+
 // ifname is the current default interface from NWPathMonitor, or "" if unknown.
 // Also valid for a prepared handle, so the underlay is known before
 // HeadwireStart binds its first socket behind a default route.

@@ -1,6 +1,6 @@
 // Package config parses and validates headwire's INI configuration: an
 // [Interface] section, optional repeated [DERPRegion] sections forming a
-// static DERP map, and repeated [Peer] sections.
+// static DERP map, repeated [Peer] sections and an optional [DNS] section.
 package config
 
 import (
@@ -26,6 +26,7 @@ type Config struct {
 	// no regions are configured.
 	Regions map[int]Region
 	Peers   []Peer
+	DNS     DNS
 }
 
 // Region is one statically configured DERP region. Nodes contains hostnames
@@ -129,7 +130,7 @@ func Parse(src []byte) (*Config, error) {
 	}
 	cfg := &Config{}
 	var peerLines []int
-	sawInterface := false
+	sawInterface, sawDNS := false, false
 	for i := range sections {
 		s := &sections[i]
 		switch {
@@ -139,6 +140,14 @@ func Parse(src []byte) (*Config, error) {
 			}
 			sawInterface = true
 			if err := parseInterface(s, &cfg.Interface); err != nil {
+				return nil, err
+			}
+		case strings.EqualFold(s.name, "DNS"):
+			if sawDNS {
+				return nil, fmt.Errorf("line %d: duplicate [DNS] section", s.line)
+			}
+			sawDNS = true
+			if err := parseDNS(s, &cfg.DNS); err != nil {
 				return nil, err
 			}
 		case strings.EqualFold(s.name, "DERPRegion"):
