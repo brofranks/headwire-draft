@@ -127,7 +127,12 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as cleanup:
             raise RuntimeError((tmp / "daemon.log").read_text())
         state = cmd("scutil", "--dns") if darwin else cmd("resolvectl", "domain")
         return host in state and str(ipaddress.ip_address("192.0.2.44").reverse_pointer) in state
-    until(published)
+    try:
+        until(published)
+    except Exception:
+        print((tmp / "daemon.log").read_text(), flush=True)
+        print(cmd("scutil", "--dns") if darwin else cmd("resolvectl", "status"), flush=True)
+        raise
     for address in ("192.0.2.44", "2001:db8::44"):
         actual = socket.getnameinfo((address, 0), socket.NI_NAMEREQD)[0].rstrip(".").lower()
         assert actual == host, (address, actual)

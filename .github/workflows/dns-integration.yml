@@ -27,6 +27,12 @@ jobs:
         run: |
           source scripts/goflags.sh
           go build -o "$RUNNER_TEMP/headwire" ./cmd/headwire
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo systemctl start systemd-resolved
+            cp -a /etc/resolv.conf "$RUNNER_TEMP/dns-before"
+            trap 'sudo cp --remove-destination -a "$RUNNER_TEMP/dns-before" /etc/resolv.conf' EXIT
+            sudo ln -sfT /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+          fi
           sudo python3 .github/dns-check/host.py "$RUNNER_TEMP/headwire"
   swift:
     runs-on: macos-26
@@ -48,6 +54,7 @@ jobs:
       - name: Compile the Go bridge and run the Swift suite
         run: |
           git -C apple apply "$PWD/.github/dns-check/apple.patch"
+          sudo install -d -o root -g wheel -m 755 /etc/headwire
           cd apple
           xcrun swift-format lint --strict -r App CLI Controller Extension Provider Shared iOS Tests
           HEADWIRE="$GITHUB_WORKSPACE" ./build.sh test CODE_SIGNING_ALLOWED=NO
