@@ -40,7 +40,7 @@ func init() {
 // killswitch helper.
 func checkKernelConfig(cfg *config.Config) error {
 	// The DNS configurator owns NRPT rules under Tailscale's registry key.
-	if len(cfg.Interface.DNS)+len(cfg.DNS.Hosts)+len(cfg.DNS.Routes) > 0 {
+	if len(cfg.Interface.DNS)+len(cfg.DNS.Addresses) > 0 {
 		return errors.New("DNS nameservers and [DNS] are not supported for Windows host networking")
 	}
 	// The router starts a /firewall child process for a default route.

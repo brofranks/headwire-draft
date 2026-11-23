@@ -107,10 +107,12 @@ func addrPointer(addr netip.AddrPort) *tcpip.FullAddress {
 	return &out
 }
 
-func dnsNode(t *testing.T, addr, extra string) *testNode {
+// dnsNode starts a node whose resolver listens on service, a [DNS] Address
+// value.
+func dnsNode(t *testing.T, addr, extra, service string) *testNode {
 	t.Helper()
 	cfg := node{key.NewNode(), netip.MustParsePrefix(addr), 0}.parse(t, extra,
-		"[DNS]\nHost = dns-test.headwire.test 192.0.2.53 2001:db8::53\n")
+		"[DNS]\nAddress = "+service+"\nHost = dns-test.headwire.test 192.0.2.53 2001:db8::53\n")
 	n, err := startNode(t, cfg, tstest.WhileTestRunningLogger(t))
 	if err != nil {
 		t.Fatal(err)
@@ -120,14 +122,14 @@ func dnsNode(t *testing.T, addr, extra string) *testNode {
 }
 
 func TestDNSServiceFamiliesAndRestart(t *testing.T) {
-	for _, tc := range []struct{ name, addr, extra string }{
-		{"ipv4", "100.64.0.1/32", ""},
-		{"ipv6", "fd00::1/128", ""},
-		{"dual", "100.64.0.1/32", "Address = fd00::1/128\n"},
+	for _, tc := range []struct{ name, addr, extra, service string }{
+		{"ipv4", "100.64.0.1/32", "", "100.64.0.53"},
+		{"ipv6", "fd00::1/128", "", "fd00::53"},
+		{"dual", "100.64.0.1/32", "Address = fd00::1/128\n", "100.64.0.53, fd00::53"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for range 3 {
-				n := dnsNode(t, tc.addr, tc.extra)
+				n := dnsNode(t, tc.addr, tc.extra, tc.service)
 				cfg := n.state.Load().cfg
 				for _, ip := range cfg.DNSServiceIPs() {
 					if !slices.Contains(Routes(cfg), netip.PrefixFrom(ip, ip.BitLen())) {
@@ -224,7 +226,7 @@ func TestDNSServiceForwardingAndTCPRetry(t *testing.T) {
 			}()
 		}
 	}()
-	n := dnsNode(t, "100.64.0.1/32", "\nMTU = 576")
+	n := dnsNode(t, "100.64.0.1/32", "\nMTU = 576", "100.64.0.53")
 	if err := n.dnsManager.Set(dns.Config{DefaultResolvers: []*dnstype.Resolver{{Addr: tcp.Addr().String()}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,10 +260,10 @@ func TestDNSServiceForwardingAndTCPRetry(t *testing.T) {
 
 func TestDNSServicePeerBoundaryAndDefaultRoute(t *testing.T) {
 	for _, tc := range []struct{ name, enabled, a, b, service, all string }{
-		{"ipv4/hook", "true", "100.64.0.1/32", "100.64.0.2/32", "100.100.100.100", "0.0.0.0/0"},
-		{"ipv4/no-hook", "false", "100.64.0.1/32", "100.64.0.2/32", "100.100.100.100", "0.0.0.0/0"},
-		{"ipv6/hook", "true", "fd00::1/128", "fd00::2/128", "fd7a:115c:a1e0::53", "::/0"},
-		{"ipv6/no-hook", "false", "fd00::1/128", "fd00::2/128", "fd7a:115c:a1e0::53", "::/0"},
+		{"ipv4/hook", "true", "100.64.0.1/32", "100.64.0.2/32", "100.64.0.53", "0.0.0.0/0"},
+		{"ipv4/no-hook", "false", "100.64.0.1/32", "100.64.0.2/32", "100.64.0.53", "0.0.0.0/0"},
+		{"ipv6/hook", "true", "fd00::1/128", "fd00::2/128", "fd00::53", "::/0"},
+		{"ipv6/no-hook", "false", "fd00::1/128", "fd00::2/128", "fd00::53", "::/0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("TS_DEBUG_CONNECT_FAILURES", tc.enabled)
@@ -270,7 +272,7 @@ func TestDNSServicePeerBoundaryAndDefaultRoute(t *testing.T) {
 			ac := a.config(t, "", b, fmt.Sprintf("Endpoint = 127.0.0.1:%d", b.port))
 			ac.Peers[0].AllowedIPs = append(ac.Peers[0].AllowedIPs, netip.PrefixFrom(netip.MustParseAddr(tc.service), netip.MustParseAddr(tc.service).BitLen()))
 			bc := b.config(t, "", a, "")
-			bc.DNS = config.DNS{Hosts: map[dnsname.FQDN][]netip.Addr{"dns-test.headwire.test.": {netip.MustParseAddr("192.0.2.53")}}}
+			bc.DNS = config.DNS{Addresses: []netip.Addr{netip.MustParseAddr(tc.service)}, Hosts: map[dnsname.FQDN][]netip.Addr{"dns-test.headwire.test.": {netip.MustParseAddr("192.0.2.53")}}}
 			bc.Peers[0].AllowedIPs = []netip.Prefix{netip.MustParsePrefix(tc.all)}
 			ea := startEcho(t, ac)
 			eb := startEcho(t, bc)
@@ -313,8 +315,7 @@ func TestDNSServicePeerBoundaryAndDefaultRoute(t *testing.T) {
 }
 
 func TestDNSServiceTCPLimitAndCancellation(t *testing.T) {
-	n := dnsNode(t, "100.64.0.1/32",
-		"Address = fd00::1/128\n")
+	n := dnsNode(t, "100.64.0.1/32", "Address = fd00::1/128\n", "100.64.0.53, fd00::53")
 	servers := n.dnsService.servers
 	query := dnsQuestion(t, "dns-test.headwire.test.", dnsmessage.TypeA)
 	var clients []net.Conn
@@ -390,7 +391,7 @@ func (c *resetConn) RemoteAddr() net.Addr { return nil }
 func (c *resetConn) Close() error         { c.closed = true; return nil }
 
 func TestDNSServiceTCPReset(t *testing.T) {
-	n := dnsNode(t, "100.64.0.1/32", "")
+	n := dnsNode(t, "100.64.0.1/32", "", "100.64.0.53")
 	c := &resetConn{}
 	l := resetListener{conns: make(chan net.Conn, 1)}
 	l.conns <- c
@@ -408,7 +409,7 @@ func TestDNSServiceDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(n.Close)
-	if n.dnsService != nil || strings.Contains(fmt.Sprint(Routes(n.state.Load().cfg)), "100.100.100.100") {
+	if n.dnsService != nil || len(Routes(n.state.Load().cfg)) != 0 {
 		t.Fatal("direct DNS enabled the service")
 	}
 }
@@ -421,7 +422,7 @@ func TestDNSServiceCloseDuringForwarding(t *testing.T) {
 	defer upstream.Close()
 	received := make(chan error, 1)
 	go func() { _, _, err := upstream.ReadFrom(make([]byte, 4096)); received <- err }()
-	n := dnsNode(t, "100.64.0.1/32", "")
+	n := dnsNode(t, "100.64.0.1/32", "", "100.64.0.53")
 	if err := n.dnsManager.Set(dns.Config{DefaultResolvers: []*dnstype.Resolver{{Addr: upstream.LocalAddr().String()}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +467,7 @@ func (d *blockedDNSDevice) Close() error {
 
 func TestDNSServiceCloseWithBlockedPacketDelivery(t *testing.T) {
 	a := node{key.NewNode(), netip.MustParsePrefix("100.64.0.1/32"), 0}
-	cfg := a.parse(t, "", "[DNS]\nHost = dns-test.headwire.test 192.0.2.53\n")
+	cfg := a.parse(t, "", "[DNS]\nAddress = 100.64.0.53\nHost = dns-test.headwire.test 192.0.2.53\n")
 	device := &blockedDNSDevice{Device: newTestStack(t, cfg), entered: make(chan struct{}), closed: make(chan struct{})}
 	e, err := Start(cfg, tstest.WhileTestRunningLogger(t), Options{Tun: device})
 	if err != nil {
@@ -474,7 +475,7 @@ func TestDNSServiceCloseWithBlockedPacketDelivery(t *testing.T) {
 	}
 	t.Cleanup(e.Close)
 	from := device.Device.(*testStack)
-	addr := netip.MustParseAddrPort("100.100.100.100:53")
+	addr := netip.MustParseAddrPort("100.64.0.53:53")
 	c, err := gonet.DialUDP(from.s, nil, addrPointer(addr), protocol(addr.Addr()))
 	if err != nil {
 		t.Fatal(err)
@@ -499,7 +500,7 @@ func TestDNSServiceCloseWithBlockedPacketDelivery(t *testing.T) {
 
 func TestDNSPolicyAnswersAndReload(t *testing.T) {
 	a := node{key.NewNode(), netip.MustParsePrefix("100.64.0.1/32"), 0}
-	cfg := a.parse(t, "", "[DNS]\nHost = only4.example 192.0.2.53\nRoute = lab.example\n")
+	cfg := a.parse(t, "", "[DNS]\nAddress = 100.64.0.53\nHost = only4.example 192.0.2.53\nRoute = lab.example\n")
 	n, err := startNode(t, cfg, t.Logf)
 	if err != nil {
 		t.Fatal(err)
@@ -530,13 +531,13 @@ func TestDNSPolicyAnswersAndReload(t *testing.T) {
 		}
 	}
 	before := n.state.Load()
-	if err := n.Reload(a.parse(t, "", "[DNS]\nHost = only4.example 192.0.2.54\n")); err == nil || !strings.Contains(err.Error(), "[DNS]") {
+	if err := n.Reload(a.parse(t, "", "[DNS]\nAddress = 100.64.0.53\nHost = only4.example 192.0.2.54\n")); err == nil || !strings.Contains(err.Error(), "[DNS]") {
 		t.Fatalf("DNS reload = %v", err)
 	}
 	if n.state.Load() != before {
 		t.Fatal("rejected DNS reload changed state")
 	}
-	answer := dnsExchange(t, dnsDial(t, n, netip.MustParseAddr("100.100.100.100"), false), false,
+	answer := dnsExchange(t, dnsDial(t, n, netip.MustParseAddr("100.64.0.53"), false), false,
 		dnsQuestion(t, "only4.example.", dnsmessage.TypeA))
 	if answer.Answers[0].Body.(*dnsmessage.AResource).A != [4]byte{192, 0, 2, 53} {
 		t.Fatal(answer)

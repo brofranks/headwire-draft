@@ -22,11 +22,11 @@ func TestManagedDNSSettings(t *testing.T) {
 		{"none", "100.64.0.1/32", "", nil, nil},
 
 		{"direct", "100.64.0.1/32", "DNS = 192.0.2.53\n", []string{"192.0.2.53"}, nil},
-		{"host", "100.64.0.1/32", "[DNS]\nHost = host.example 192.0.2.1\n", []string{"100.100.100.100"}, []string{"host.example"}},
-		{"host6", "fd00::1/128", "[DNS]\nHost = host.example 192.0.2.1\n", []string{"fd7a:115c:a1e0::53"}, []string{"host.example"}},
-		{"dual", "100.64.0.1/32, fd00::1/128", "[DNS]\nHost = host.example 192.0.2.1\n", []string{"100.100.100.100", "fd7a:115c:a1e0::53"}, []string{"host.example"}},
-		{"route", "100.64.0.1/32", "[DNS]\nRoute = corp.example 192.0.2.53\n", []string{"192.0.2.53"}, []string{"corp.example"}},
-		{"proxy", "100.64.0.1/32", "DNS = 192.0.2.53\n[DNS]\nHost = host.example 192.0.2.1\n", []string{"100.100.100.100"}, nil},
+		{"host", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53"}, []string{"host.example"}},
+		{"host6", "fd00::1/128", "[DNS]\nAddress = fd00::53\nHost = host.example 192.0.2.1\n", []string{"fd00::53"}, []string{"host.example"}},
+		{"dual", "100.64.0.1/32, fd00::1/128", "[DNS]\nAddress = 100.64.0.53, fd00::53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53", "fd00::53"}, []string{"host.example"}},
+		{"route", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\nRoute = corp.example 192.0.2.53\n", []string{"192.0.2.53"}, []string{"corp.example"}},
+		{"proxy", "100.64.0.1/32", "DNS = 192.0.2.53\n[DNS]\nAddress = 100.64.0.53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := config.Parse([]byte("[Interface]\nPrivateKey = " + config.EncodeKey(key.NewNode().Raw32()) + "\nAddress = " + tc.addresses + "\n" + tc.policy))

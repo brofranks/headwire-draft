@@ -24,13 +24,12 @@ import (
 	"runtime"
 
 	"tailscale.com/net/dns"
-	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/util/dnsname"
 )
 
 // baseDNS reads the native resolver configuration without retaining a startup
-// snapshot. The macOS reader excludes the tunnel's own virtual nameservers.
+// snapshot. The engine removes the tunnel's own resolver from the result.
 func baseDNS() (dns.OSConfig, error) {
 	if runtime.GOOS == "darwin" {
 		osDNS, err := dns.NewOSConfigurator(logf, nil, nil, nil, nil, "")
@@ -57,9 +56,6 @@ func baseDNS() (dns.OSConfig, error) {
 		addr, err := netip.ParseAddr(C.GoString(&host[0]))
 		if err != nil {
 			return dns.OSConfig{}, err
-		}
-		if addr == tsaddr.TailscaleServiceIP() || addr == tsaddr.TailscaleServiceIPv6() {
-			continue
 		}
 		cfg.Resolvers = append(cfg.Resolvers, &dnstype.Resolver{Addr: net.JoinHostPort(addr.String(), C.GoString(&port[0]))})
 	}

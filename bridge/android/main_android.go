@@ -105,7 +105,7 @@ func HeadwirePrepareConfig(text *C.char, handle *C.int32_t, settings **C.char) *
 		// The app applies only the configured nameservers, never the
 		// node's local resolver.
 		if len(cfg.DNSServiceIPs()) > 0 {
-			return errors.New("[DNS] and DoH-only DNS servers are not supported on Android")
+			return errors.New("[DNS] is not supported on Android")
 		}
 		// The header requires this call before establish(), so the
 		// lookups still use the underlay's DNS.

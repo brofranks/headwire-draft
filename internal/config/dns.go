@@ -10,25 +10,47 @@ import (
 	"tailscale.com/util/dnsname"
 )
 
-// DNS is the [DNS] section: the records the node's resolver serves. Hosts
+// DNS is the [DNS] section: the node's resolver and the records it serves.
+// Addresses are where the resolver listens, at most one per family. Hosts
 // maps a lowercase FQDN to its addresses. Routes maps a domain suffix to the
 // resolvers answering names under it, and an empty list makes the node
 // authoritative for the suffix, so a name under it without a Host record does
 // not exist. Both maps are nil when the section is absent.
 type DNS struct {
-	Hosts  map[dnsname.FQDN][]netip.Addr
-	Routes map[dnsname.FQDN][]netip.Addr
+	Addresses []netip.Addr
+	Hosts     map[dnsname.FQDN][]netip.Addr
+	Routes    map[dnsname.FQDN][]netip.Addr
 }
 
-// parseDNS reads Host and Route records, one per line, each a name or
-// suffix followed by addresses separated by commas or whitespace.
+// parseDNS reads the resolver's Address and the Host and Route records, one
+// per line, each a name or suffix followed by addresses separated by commas or
+// whitespace.
 func parseDNS(s *section, d *DNS) error {
-	if err := s.checkKnownKeys("Host", "Route"); err != nil {
+	if err := s.checkKnownKeys("Address", "Host", "Route"); err != nil {
 		return err
+	}
+	if _, _, _, err := s.get("Address"); err != nil {
+		return err
+	}
+	for line, v := range s.values("Address") {
+		addr, err := netip.ParseAddr(v)
+		if err != nil {
+			return fmt.Errorf("line %d: Address: invalid address %q", line, v)
+		}
+		if addr.Zone() != "" || addr.Is4In6() || !addr.IsGlobalUnicast() {
+			return fmt.Errorf("line %d: Address: %s is not a unicast address for a resolver", line, addr)
+		}
+		if slices.ContainsFunc(d.Addresses, func(a netip.Addr) bool { return a.Is4() == addr.Is4() }) {
+			return fmt.Errorf("line %d: Address: at most one address per family", line)
+		}
+		d.Addresses = append(d.Addresses, addr)
 	}
 	d.Hosts, d.Routes = map[dnsname.FQDN][]netip.Addr{}, map[dnsname.FQDN][]netip.Addr{}
 	routeLines := map[dnsname.FQDN]int{}
 	for _, e := range s.entries {
+		if strings.EqualFold(e.key, "Address") {
+			continue
+		}
 		fields := strings.FieldsFunc(e.value, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
 		host := strings.EqualFold(e.key, "Host")
 		if len(fields) == 0 || host && len(fields) == 1 {
