@@ -16,6 +16,7 @@ import (
 	"brof.dev/headwire/internal/config"
 	"brof.dev/headwire/internal/engine"
 	"github.com/tailscale/wireguard-go/tun"
+	"tailscale.com/net/dns"
 	"tailscale.com/types/logger"
 )
 
@@ -27,10 +28,12 @@ type Settings struct {
 	IPv4Routes    []Prefix `json:"ipv4Routes"`
 	IPv6Addresses []Prefix `json:"ipv6Addresses"`
 	IPv6Routes    []Prefix `json:"ipv6Routes"`
-	// DNSServers and DNSSearch feed NEDNSSettings, which the provider
-	// applies system-wide.
-	DNSServers []string `json:"dnsServers"`
-	DNSSearch  []string `json:"dnsSearch"`
+	// DNSServers and DNSSearch feed the platform DNS settings.
+	// DNSMatchDomains scopes the nameservers. Empty selects the primary
+	// resolver.
+	DNSServers      []string `json:"dnsServers"`
+	DNSSearch       []string `json:"dnsSearch"`
+	DNSMatchDomains []string `json:"dnsMatchDomains"`
 }
 
 // Prefix carries both spellings: IPv4 settings want Mask, IPv6 want Bits.
@@ -59,11 +62,12 @@ func split(pfxs []netip.Prefix) (v4, v6 []Prefix) {
 // eng is nil until Start succeeds. Handles are never reused, so a late Stop
 // from an earlier provider cannot release a newer session.
 var (
-	mu     sync.Mutex
-	next   int32
-	handle int32
-	cfg    *config.Config
-	eng    *engine.Engine
+	mu       sync.Mutex
+	next     int32
+	handle   int32
+	cfg      *config.Config
+	eng      *engine.Engine
+	resolver *providerDNS
 )
 
 // Prepare returns a handle for Start with the settings the system needs
@@ -71,15 +75,7 @@ var (
 // route is installed as a route only, with nothing keeping traffic off the
 // underlay while the tunnel is down.
 func Prepare(c *config.Config) (int32, *Settings, error) {
-	s := &Settings{MTU: engine.MTU(c)}
-	s.IPv4Addresses, s.IPv6Addresses = split(c.Interface.Addresses)
-	s.IPv4Routes, s.IPv6Routes = split(engine.Routes(c))
-	for _, a := range c.Interface.DNS {
-		s.DNSServers = append(s.DNSServers, a.String())
-	}
-	for _, d := range c.Interface.DNSSearch {
-		s.DNSSearch = append(s.DNSSearch, d.WithoutTrailingDot())
-	}
+	s := settings(c)
 	mu.Lock()
 	defer mu.Unlock()
 	// Admission precedes the provider's asynchronous network-settings call.
@@ -150,8 +146,12 @@ func Start(h int32, dev tun.Device, logf logger.Logf, arm func()) error {
 	if arm != nil {
 		arm()
 	}
+	var osDNS dns.OSConfigurator
+	if resolver != nil {
+		osDNS = resolver
+	}
 	var err error
-	eng, err = engine.Start(cfg, logf, engine.Options{Tun: dev})
+	eng, err = engine.Start(cfg, logf, engine.Options{Tun: dev, DNS: osDNS})
 	return err
 }
 
@@ -199,6 +199,19 @@ func Stop(h int32, disarm func()) bool {
 	if disarm != nil {
 		disarm()
 	}
-	handle, cfg, eng = 0, nil, nil
+	handle, cfg, eng, resolver = 0, nil, nil, nil
 	return true
+}
+
+func settings(c *config.Config) *Settings {
+	s := &Settings{MTU: engine.MTU(c)}
+	s.IPv4Addresses, s.IPv6Addresses = split(c.Interface.Addresses)
+	s.IPv4Routes, s.IPv6Routes = split(engine.Routes(c))
+	for _, a := range c.Interface.DNS {
+		s.DNSServers = append(s.DNSServers, a.String())
+	}
+	for _, d := range c.Interface.DNSSearch {
+		s.DNSSearch = append(s.DNSSearch, d.WithoutTrailingDot())
+	}
+	return s
 }

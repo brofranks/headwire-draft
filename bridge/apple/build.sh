@@ -17,6 +17,7 @@ slice() ( # goos goarch sdk min-version-flag
     flags="-isysroot $(xcrun --sdk "$3" --show-sdk-path) $4 -arch $arch"
     CC=$(xcrun --sdk "$3" --find clang)
     export CGO_ENABLED=1 GOOS=$1 GOARCH=$2 CC CGO_CFLAGS=$flags CGO_LDFLAGS=$flags
+    export GOFLAGS="$GOFLAGS,ts_macext"
     go build -trimpath -ldflags="-X brof.dev/headwire/internal/cli.version=${VERSION:-dev}" -buildmode=c-archive -o "$out/$1-$2.a" .
     [ "$2" = arm64 ] || return 0 # both darwin slices link the same modules
     rm -rf "$out/notices/$1"
@@ -37,7 +38,7 @@ slice darwin amd64 macosx -mmacosx-version-min=13.0
 slice ios arm64 iphoneos -miphoneos-version-min=16.0
 
 for a in darwin-arm64:Profile ios-arm64:Config; do
-    want="_HeadwireCLI _HeadwireFree _HeadwireNetworkChanged _HeadwirePrepare${a#*:} _HeadwireStart _HeadwireStatus _HeadwireStop"
+    want="_HeadwireCLI _HeadwireDNSSettings _HeadwireFree _HeadwireNetworkChanged _HeadwirePrepare${a#*:} _HeadwireStart _HeadwireStatus _HeadwireStop"
     got=$(nm -gU "$out/${a%:*}.a" 2> /dev/null | awk '$2 == "T" && $3 ~ /^_Headwire/ {print $3}' | sort -u | xargs)
     [ "$got" = "$want" ] || {
         echo "${a%:*} exported symbols: $got" >&2
