@@ -134,8 +134,6 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 	// name it. An omitted or zero port lets the OS choose.
 	knobs := new(controlknobs.Knobs)
 	knobs.UserDialUseRoutes.Store(true)
-	knobs.ForceRegisterMagicDNSIPv4Only.Store(!slices.ContainsFunc(cfg.Interface.Addresses,
-		func(p netip.Prefix) bool { return p.Addr().Is6() }))
 	knobs.ScopeQuad100OnMacOS.Store(true)
 	servers := cfg.DNSServiceIPs()
 	conf := wgengine.Config{

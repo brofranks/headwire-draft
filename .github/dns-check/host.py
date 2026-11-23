@@ -142,6 +142,17 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as cleanup:
         expect("before." + zone, 0)
         cmd("networksetup", "-setdnsservers", service, addrs[1])
         until(lambda: addrs[1] in Path("/etc/resolv.conf").read_text())
+        # The OS file changes before mDNSResponder necessarily adopts the
+        # new server. Observe that handover with fresh names outside the split
+        # domain; the two acceptance queries below must then pass immediately.
+        observed = []
+        def using_new_default():
+            name = f"handover-{len(observed)}.{zone}."
+            answers = {r[4][0] for r in socket.getaddrinfo(name, None, socket.AF_INET, socket.SOCK_STREAM)}
+            observed.append(answers)
+            return answers == {records[1]}
+        until(using_new_default)
+        print(f"Resolver handover responses: {observed}", flush=True)
         expect("after." + zone, 1)
         expect("after." + split, 2)
     print("Host DNS checks passed", flush=True)

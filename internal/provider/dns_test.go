@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -15,20 +16,45 @@ import (
 )
 
 func TestManagedDNSSettings(t *testing.T) {
+	const host = "Host = host.example 192.0.2.1\n"
 	const ptr4 = "1.2.0.192.in-addr.arpa"
 	const ptr6 = "4.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+	const dual = "100.64.0.1/32, fd00::1/128"
+	routeServer := "192.0.2.53"
+	if runtime.GOOS == "windows" {
+		// Windows sends split queries through the local listener for WSL.
+		routeServer = "100.64.0.53"
+	}
 	for _, tc := range []struct {
 		name, addresses, policy string
 		servers, match          []string
 	}{
 		{"none", "100.64.0.1/32", "", nil, nil},
-
 		{"direct", "100.64.0.1/32", "DNS = 192.0.2.53\n", []string{"192.0.2.53"}, nil},
-		{"host", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53"}, []string{ptr4, "host.example"}},
-		{"host6", "fd00::1/128", "[DNS]\nAddress = fd00::53\nHost = host.example 192.0.2.1\n", []string{"fd00::53"}, []string{ptr4, "host.example"}},
-		{"dual", "100.64.0.1/32, fd00::1/128", "[DNS]\nAddress = 100.64.0.53, fd00::53\nHost = host.example 192.0.2.1 2001:db8::54\n", []string{"100.64.0.53", "fd00::53"}, []string{ptr4, ptr6, "host.example"}},
-		{"route", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\nRoute = corp.example 192.0.2.53\n", []string{"192.0.2.53"}, []string{"corp.example"}},
-		{"proxy", "100.64.0.1/32", "DNS = 192.0.2.53\n[DNS]\nAddress = 100.64.0.53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53"}, nil},
+		{
+			"host", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\n" + host,
+			[]string{"100.64.0.53"}, []string{ptr4, "host.example"},
+		},
+		{
+			"host6", "fd00::1/128", "[DNS]\nAddress = fd00::53\n" + host,
+			[]string{"fd00::53"}, []string{ptr4, "host.example"},
+		},
+		{
+			"dual", dual, "[DNS]\nAddress = 100.64.0.53, fd00::53\n" + host + "Host = host.example 2001:db8::54\n",
+			[]string{"100.64.0.53", "fd00::53"}, []string{ptr4, ptr6, "host.example"},
+		},
+		{
+			"dual IPv6 listener", dual, "[DNS]\nAddress = fd00::53\n" + host,
+			[]string{"fd00::53"}, []string{ptr4, "host.example"},
+		},
+		{
+			"route", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\nRoute = corp.example 192.0.2.53\n",
+			[]string{routeServer}, []string{"corp.example"},
+		},
+		{
+			"proxy", "100.64.0.1/32", "DNS = 192.0.2.53\n[DNS]\nAddress = 100.64.0.53\n" + host,
+			[]string{"100.64.0.53"}, nil,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := config.Parse([]byte("[Interface]\nPrivateKey = " + config.EncodeKey(key.NewNode().Raw32()) + "\nAddress = " + tc.addresses + "\n" + tc.policy))

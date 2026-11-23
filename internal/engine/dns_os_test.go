@@ -72,7 +72,8 @@ func TestDNSBaseResolvers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(filtered.Nameservers, wantNS[1:]) || !slices.Equal(filtered.Resolvers, wantResolvers[2:]) {
+	if !slices.Equal(filtered.Nameservers, wantNS[1:]) ||
+		!slices.EqualFunc(filtered.Resolvers, wantResolvers[2:], (*dnstype.Resolver).Equal) {
 		t.Fatalf("usable nameservers = %v, resolvers = %v", filtered.Nameservers, filtered.Resolvers)
 	}
 	if !slices.Equal(base.Nameservers, wantNS) || !slices.Equal(base.Resolvers, wantResolvers) {
