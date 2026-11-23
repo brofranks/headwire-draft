@@ -42,7 +42,7 @@ index 2ab461a..427e929 100644
      func stop(_ handle: Int32)
      /// One status field, `ip [-1|-4|-6]`, or `ping IP`.
 diff --git a/Shared/BridgeSettings.swift b/Shared/BridgeSettings.swift
-index 6f3cf80..3720281 100644
+index 6f3cf80..e8a956e 100644
 --- a/Shared/BridgeSettings.swift
 +++ b/Shared/BridgeSettings.swift
 @@ -1,8 +1,7 @@
@@ -77,9 +77,9 @@ index 6f3cf80..3720281 100644
 -                dns.matchDomains = [""]
 +                let match = dnsMatchDomains ?? []
 +                dns.matchDomains = match.isEmpty ? [""] : match
-+                // Scoped match domains contribute search suffixes. The manager
-+                // selects primary mode when those suffixes must stay internal.
-+                dns.matchDomainsNoSearch = match.isEmpty
++                // Exact host and PTR routes are lookup scopes. Only the
++                // configured search domains belong in the search list.
++                dns.matchDomainsNoSearch = true
              }
              settings.dnsSettings = dns
          }
@@ -301,22 +301,23 @@ index a2293c7..8cb3916 100644
          session.stop { events.append("already stopped") }
          XCTAssertEqual(events, ["release", "stop", "already stopped"])
 diff --git a/Tests/SharedTests.swift b/Tests/SharedTests.swift
-index 5855753..ef0f204 100644
+index 5855753..ec3f5b2 100644
 --- a/Tests/SharedTests.swift
 +++ b/Tests/SharedTests.swift
-@@ -2,6 +2,17 @@ import NetworkExtension
+@@ -2,6 +2,18 @@ import NetworkExtension
  import XCTest
  
  final class SharedTests: XCTestCase {
-+    func testCompiledDNSScope() throws {
-+        let scoped = try JSONDecoder().decode(
-+            BridgeSettings.self,
-+            from: Data(
-+                #"{"mtu":1280,"dnsServers":["100.100.100.100"],"dnsMatchDomains":["host.example","1.0.0.10.in-addr.arpa"]}"#
-+                    .utf8))
-+        let dns = scoped.networkSettings().dnsSettings
-+        XCTAssertEqual(dns?.matchDomains, ["host.example", "1.0.0.10.in-addr.arpa"])
-+        XCTAssertEqual(dns?.matchDomainsNoSearch, false)
++    func testCompiledDNSScope() {
++        let domains = ["host.example", "1.0.0.10.in-addr.arpa"]
++        for search: [String]? in [nil, ["corp.example"]] {
++            let scoped = BridgeSettings(
++                mtu: 1280, dnsServers: ["10.9.0.53"], dnsSearch: search, dnsMatchDomains: domains)
++            let dns = scoped.networkSettings().dnsSettings
++            XCTAssertEqual(dns?.matchDomains, domains)
++            XCTAssertEqual(dns?.searchDomains, search ?? [])
++            XCTAssertEqual(dns?.matchDomainsNoSearch, true)
++        }
 +    }
 +
      func testProfileNames() {
