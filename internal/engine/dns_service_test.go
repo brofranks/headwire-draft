@@ -165,6 +165,38 @@ func TestDNSServiceFamiliesAndRestart(t *testing.T) {
 	}
 }
 
+func TestDNSHostPTR(t *testing.T) {
+	n := dnsNode(t, "100.64.0.1/32", "", "10.9.0.53")
+	for _, name := range []string{
+		"53.2.0.192.in-addr.arpa.",
+		"3.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.",
+	} {
+		query := dnsQuestion(t, name, dnsmessage.TypePTR)
+		answer := dnsExchange(t, dnsDial(t, n, n.dnsService.servers[0], false), false, query)
+		if len(answer.Answers) != 1 {
+			t.Fatalf("%s: answers = %v", name, answer.Answers)
+		}
+		ptr, ok := answer.Answers[0].Body.(*dnsmessage.PTRResource)
+		if !ok || ptr.PTR.String() != "dns-test.headwire.test." {
+			t.Fatalf("%s: PTR = %v", name, answer.Answers[0])
+		}
+	}
+}
+
+func TestDNSHostWithExplicitReverseRoute(t *testing.T) {
+	const ptr = "53.2.0.192.in-addr.arpa."
+	n := node{key.NewNode(), netip.MustParsePrefix("100.64.0.1/32"), 0}
+	for _, suffix := range []dnsname.FQDN{ptr, "2.0.192.in-addr.arpa."} {
+		cfg := n.parse(t, "", "[DNS]\nAddress = 10.9.0.53\nHost = node.example 192.0.2.53\nRoute = "+
+			string(suffix)+" 192.0.2.54")
+		routes := dnsConfig(cfg).Routes
+		upstreams := routes[suffix]
+		if len(routes) != 2 || len(upstreams) != 1 || upstreams[0].Addr != "192.0.2.54" {
+			t.Fatalf("routes for %s = %v", suffix, routes)
+		}
+	}
+}
+
 func TestDNSServiceForwardingAndTCPRetry(t *testing.T) {
 	tcp, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {

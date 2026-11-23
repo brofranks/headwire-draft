@@ -1,0 +1,486 @@
+diff --git a/Provider/GoBridge.swift b/Provider/GoBridge.swift
+index 502d215..7fa750b 100644
+--- a/Provider/GoBridge.swift
++++ b/Provider/GoBridge.swift
+@@ -20,6 +20,13 @@ struct GoBridge: Bridge {
+         try check(HeadwireStart(handle, descriptor))
+     }
+ 
++    func dnsSettings(_ handle: Int32) throws -> String {
++        var out: UnsafeMutablePointer<CChar>?
++        try check(HeadwireDNSSettings(handle, &out))
++        defer { HeadwireFree(out) }
++        return String(cString: out!)
++    }
++
+     func stop(_ handle: Int32) {
+         HeadwireStop(handle)
+     }
+diff --git a/Provider/PacketTunnelProvider.swift b/Provider/PacketTunnelProvider.swift
+index 0167e38..159fe38 100644
+--- a/Provider/PacketTunnelProvider.swift
++++ b/Provider/PacketTunnelProvider.swift
+@@ -19,6 +19,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
+             },
+             descriptor: TunDescriptor.find(settings:),
+             monitor: { [unowned self] in self.monitorPaths() },
++            failed: { [unowned self] error in self.cancelTunnelWithError(error) },
+             lifecycle: { [unowned self] work in self.lifecycle.async(execute: work) }))
+ 
+     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+diff --git a/Shared/Bridge.swift b/Shared/Bridge.swift
+index 2ab461a..427e929 100644
+--- a/Shared/Bridge.swift
++++ b/Shared/Bridge.swift
+@@ -8,6 +8,8 @@ protocol Bridge {
+     func prepare(_ source: String) throws -> (handle: Int32, settings: String)
+     /// Runs the engine on an applied tunnel's utun.
+     func start(_ handle: Int32, descriptor: Int32) throws
++    /// The manager-generated settings after startup or a base DNS change.
++    func dnsSettings(_ handle: Int32) throws -> String
+     /// Releases the handle, prepared or running.
+     func stop(_ handle: Int32)
+     /// One status field, `ip [-1|-4|-6]`, or `ping IP`.
+diff --git a/Shared/BridgeSettings.swift b/Shared/BridgeSettings.swift
+index 6f3cf80..3720281 100644
+--- a/Shared/BridgeSettings.swift
++++ b/Shared/BridgeSettings.swift
+@@ -1,8 +1,7 @@
+ import Foundation
+ import NetworkExtension
+ 
+-/// The JSON the bridge's prepare function returns (internal/apple.Settings in
+-/// headwire).
++/// The JSON returned by the bridge's prepare and DNS settings functions.
+ struct BridgeSettings: Codable, Equatable {
+     struct Prefix: Codable, Equatable {
+         var address: String
+@@ -17,11 +16,12 @@ struct BridgeSettings: Codable, Equatable {
+     var ipv6Routes: [Prefix]?
+     var dnsServers: [String]?
+     var dnsSearch: [String]?
++    var dnsMatchDomains: [String]?
+ 
+     /// A default route arrives as `0.0.0.0` mask `0.0.0.0` or `::/0` and is
+     /// installed as a route only: no `includeAllNetworks`,
+-    /// `excludeLocalNetworks` or `excludedRoutes`. DNS servers resolve every
+-    /// domain.
++    /// `excludeLocalNetworks` or `excludedRoutes`. The manager supplies DNS
++    /// nameservers and match domains.
+     func networkSettings() -> NEPacketTunnelNetworkSettings {
+         // The tunnel has many remotes, but NetworkExtension wants one
+         // placeholder.
+@@ -52,7 +52,11 @@ struct BridgeSettings: Codable, Equatable {
+             let dns = NEDNSSettings(servers: servers)
+             dns.searchDomains = search
+             if !servers.isEmpty {
+-                dns.matchDomains = [""]
++                let match = dnsMatchDomains ?? []
++                dns.matchDomains = match.isEmpty ? [""] : match
++                // Scoped match domains contribute search suffixes. The manager
++                // selects primary mode when those suffixes must stay internal.
++                dns.matchDomainsNoSearch = match.isEmpty
+             }
+             settings.dnsSettings = dns
+         }
+diff --git a/Shared/ProviderSession.swift b/Shared/ProviderSession.swift
+index f6938c6..18b52dd 100644
+--- a/Shared/ProviderSession.swift
++++ b/Shared/ProviderSession.swift
+@@ -25,21 +25,42 @@ final class ProviderSession {
+         state = .starting(handle, completion, [])
+     }
+ 
+-    /// Also used for errors before settings are applied. The caller delivers
+-    /// exactly one completion for the pending application of network settings.
+-    func settingsApplied(_ error: Error?, startEngine: (Int32) throws -> Void) {
+-        guard case .starting(let handle, let started, let stopped) = state else { return }
++    /// Holds admission through bootstrap, engine start and the final settings
++    /// callback. A stop waits for the outstanding application to finish.
++    func settingsApplied(
++        _ error: Error?, apply: (Int32, @escaping (Error?) -> Void) throws -> Void
++    ) {
++        guard case .starting(let handle, _, let stopped) = state else { return }
++        if !stopped.isEmpty { return finished(handle, error: CancellationError()) }
++        if let error { return finished(handle, error: error) }
+         do {
+-            if !stopped.isEmpty { throw CancellationError() }
+-            if let error { throw error }
+-            try startEngine(handle)
+-            state = .running(handle)
+-            started(nil)
++            try apply(handle) { self.finished(handle, error: $0) }
+         } catch {
+-            teardown(handle, completions: [{ started(error) }] + stopped)
++            finished(handle, error: error)
+         }
+     }
+ 
++    /// Uses the same admission and cancellation flow for later settings changes.
++    func update(
++        completion: @escaping (Error?) -> Void,
++        apply: (Int32, @escaping (Error?) -> Void) throws -> Void
++    ) {
++        guard case .running(let handle) = state else { return }
++        state = .starting(handle, completion, [])
++        settingsApplied(nil, apply: apply)
++    }
++
++    private func finished(_ handle: Int32, error: Error?) {
++        guard case .starting(let current, let started, let stopped) = state, current == handle else { return }
++        let failure = stopped.isEmpty ? error : CancellationError()
++        if let failure {
++            teardown(handle, completions: [{ started(failure) }] + stopped)
++            return
++        }
++        state = .running(handle)
++        started(nil)
++    }
++
+     /// Releases whatever this provider holds, in any state.
+     func stop(completion: @escaping () -> Void) {
+         switch state {
+diff --git a/Shared/TunnelStart.swift b/Shared/TunnelStart.swift
+index 4a703d3..52d47dd 100644
+--- a/Shared/TunnelStart.swift
++++ b/Shared/TunnelStart.swift
+@@ -14,6 +14,8 @@ struct TunnelHost {
+     /// Starts feeding the engine default-interface changes. The closure it
+     /// returns stops that feed.
+     var monitor: () -> () -> Void
++    /// Terminates the running tunnel after a settings failure.
++    var failed: (Error) -> Void
+     /// Runs work back on the lifecycle queue, where the handle is owned.
+     var lifecycle: (@escaping @Sendable () -> Void) -> Void
+ }
+@@ -24,10 +26,14 @@ struct TunnelHost {
+ final class TunnelStart: @unchecked Sendable {
+     private let bridge: Bridge
+     private let host: TunnelHost
++    private var appliedSettings: BridgeSettings?
++    private var needsDNSRefresh = false
+     private var stopMonitor: () -> Void = {}
+     private lazy var session = ProviderSession { [unowned self] handle in
+         self.stopMonitor()
+         self.stopMonitor = {}
++        self.appliedSettings = nil
++        self.needsDNSRefresh = false
+         self.bridge.stop(handle)
+     }
+ 
+@@ -55,7 +61,7 @@ final class TunnelStart: @unchecked Sendable {
+         do {
+             settings = try JSONDecoder().decode(BridgeSettings.self, from: Data(prepared.settings.utf8))
+         } catch {
+-            return session.settingsApplied(Diagnostics.failure("settings: \(error)")) { _ in }
++            return session.settingsApplied(Diagnostics.failure("settings: \(error)")) { _, _ in }
+         }
+         // NetworkExtension can ignore routes in a family without a tunnel
+         // address and send matching traffic over the physical interface.
+@@ -64,18 +70,20 @@ final class TunnelStart: @unchecked Sendable {
+             ("IPv6", settings.ipv6Addresses, settings.ipv6Routes),
+         ] where (addresses ?? []).isEmpty && !(routes ?? []).isEmpty {
+             let error = Diagnostics.failure("\(family) routes require an \(family) Address in [Interface]")
+-            return session.settingsApplied(error) { _ in }
++            return session.settingsApplied(error) { _, _ in }
+         }
+         // Before the routes go in, so the engine knows the underlay when it
+         // binds its first socket behind a default route.
+         stopMonitor = host.monitor()
+         host.apply(settings) { [self] failure in
+             host.lifecycle {
+-                self.session.settingsApplied(failure) { handle in
++                self.session.settingsApplied(failure) { handle, finished in
+                     guard let descriptor = self.host.descriptor(settings) else {
+                         throw Diagnostics.failure("no unique utun descriptor matching the tunnel addresses")
+                     }
+                     try self.bridge.start(handle, descriptor: descriptor)
++                    self.appliedSettings = settings
++                    try self.applyDNS(handle, finished: finished)
+                 }
+             }
+         }
+@@ -85,11 +93,38 @@ final class TunnelStart: @unchecked Sendable {
+         session.stop(completion: completion)
+     }
+ 
+-    /// A no-op before the engine runs: the bridge is told where the default
+-    /// route went, which only a started engine can act on.
++    /// The bridge records every underlay change, even while settings are being
++    /// applied. DNS recompilation uses the latest path after that application.
+     func networkChanged(_ interface: String) {
+         guard let handle else { return }
+         bridge.networkChanged(handle, interface: interface)
++        needsDNSRefresh = true
++        refreshDNSIfNeeded()
++    }
++
++    private func refreshDNSIfNeeded() {
++        guard needsDNSRefresh else { return }
++        session.update { [self] error in
++            if let error, !(error is CancellationError) { host.failed(error) }
++        } apply: {
++            try self.applyDNS($0, finished: $1)
++        }
++    }
++
++    private func applyDNS(_ handle: Int32, finished: @escaping (Error?) -> Void) throws {
++        needsDNSRefresh = false
++        let json = try bridge.dnsSettings(handle)
++        let settings = try JSONDecoder().decode(BridgeSettings.self, from: Data(json.utf8))
++        guard settings != appliedSettings else { return finished(nil) }
++        // Only the lifecycle queue delivers the completion to the session.
++        nonisolated(unsafe) let finish = finished
++        host.apply(settings) { [self] error in
++            host.lifecycle { [self] in
++                if error == nil { appliedSettings = settings }
++                finish(error)
++                refreshDNSIfNeeded()
++            }
++        }
+     }
+ 
+     /// The app's status request, answered by the running engine.
+diff --git a/Tests/GoBridgeTests.swift b/Tests/GoBridgeTests.swift
+index 999e2cc..9b3aa21 100644
+--- a/Tests/GoBridgeTests.swift
++++ b/Tests/GoBridgeTests.swift
+@@ -27,6 +27,8 @@ final class GoBridgeTests: XCTestCase {
+         // Start adopts the descriptor before it looks at the handle, so this
+         // one is refused for the descriptor it was given.
+         XCTAssertEqual(failure { try bridge.start(99, descriptor: -1) }, "bad file descriptor")
++        XCTAssertEqual(
++            failure { _ = try bridge.dnsSettings(99) }, "handle 99 is not running with managed DNS")
+         bridge.stop(99)
+         bridge.networkChanged(99, interface: "en0")
+     }
+diff --git a/Tests/ProviderSessionTests.swift b/Tests/ProviderSessionTests.swift
+index a2293c7..8cb3916 100644
+--- a/Tests/ProviderSessionTests.swift
++++ b/Tests/ProviderSessionTests.swift
+@@ -12,11 +12,13 @@ final class ProviderSessionTests: XCTestCase {
+         session.stop { events.append("second stop") }
+         XCTAssertEqual(session.handle, 1)
+         XCTAssertTrue(events.isEmpty)
+-        session.settingsApplied(nil) { _ in XCTFail("started after stop") }
++        session.settingsApplied(nil) { _, _ in XCTFail("started after stop") }
+         XCTAssertNil(session.handle)
+         XCTAssertEqual(events, ["release 1", "start canceled", "stop", "second stop"])
+         session.begin(2) { XCTAssertNil($0) }
+-        session.settingsApplied(nil) { XCTAssertEqual($0, 2) }
++        session.settingsApplied(nil) { h, done in
++            XCTAssertEqual(h, 2); done(nil)
++        }
+         XCTAssertEqual(session.handle, 2)
+         session.stop {}
+         XCTAssertEqual(events.last, "release 2")
+@@ -32,14 +34,14 @@ final class ProviderSessionTests: XCTestCase {
+                 events.append("failed")
+             }
+             XCTAssertEqual(session.handle, 1)
+-            session.settingsApplied(settingsFail ? Failure() : nil) { _ in
++            session.settingsApplied(settingsFail ? Failure() : nil) { _, _ in
+                 XCTAssertFalse(settingsFail)
+                 throw Failure()
+             }
+             XCTAssertNil(session.handle)
+             XCTAssertEqual(events, ["release 1", "failed"])
+             session.begin(2) { XCTAssertNil($0) }
+-            session.settingsApplied(nil) { _ in }
++            session.settingsApplied(nil) { _, done in done(nil) }
+             session.stop {}
+             XCTAssertEqual(events.last, "release 2")
+         }
+@@ -49,7 +51,7 @@ final class ProviderSessionTests: XCTestCase {
+         var events: [String] = []
+         let session = ProviderSession { _ in events.append("release") }
+         session.begin(1) { XCTAssertNil($0) }
+-        session.settingsApplied(nil) { _ in }
++        session.settingsApplied(nil) { _, done in done(nil) }
+         session.stop { events.append("stop") }
+         session.stop { events.append("already stopped") }
+         XCTAssertEqual(events, ["release", "stop", "already stopped"])
+diff --git a/Tests/SharedTests.swift b/Tests/SharedTests.swift
+index 5855753..ef0f204 100644
+--- a/Tests/SharedTests.swift
++++ b/Tests/SharedTests.swift
+@@ -2,6 +2,17 @@ import NetworkExtension
+ import XCTest
+ 
+ final class SharedTests: XCTestCase {
++    func testCompiledDNSScope() throws {
++        let scoped = try JSONDecoder().decode(
++            BridgeSettings.self,
++            from: Data(
++                #"{"mtu":1280,"dnsServers":["100.100.100.100"],"dnsMatchDomains":["host.example","1.0.0.10.in-addr.arpa"]}"#
++                    .utf8))
++        let dns = scoped.networkSettings().dnsSettings
++        XCTAssertEqual(dns?.matchDomains, ["host.example", "1.0.0.10.in-addr.arpa"])
++        XCTAssertEqual(dns?.matchDomainsNoSearch, false)
++    }
++
+     func testProfileNames() {
+         XCTAssertTrue(ProfileName.isValid("home-2_a"))
+         for name in ["", "../etc/passwd", "a/b", "a.conf", "a b"] {
+diff --git a/Tests/TunnelStartTests.swift b/Tests/TunnelStartTests.swift
+index 8470418..b8e99df 100644
+--- a/Tests/TunnelStartTests.swift
++++ b/Tests/TunnelStartTests.swift
+@@ -8,6 +8,8 @@ private final class FakeBridge: Bridge {
+         """#
+     var prepareFailure: Error?
+     var startFailure: Error?
++    var dnsFailure: Error?
++    var servers: [String]? = ["192.0.2.53"]
+     var calls: [String] = []
+ 
+     func prepare(_ source: String) throws -> (handle: Int32, settings: String) {
+@@ -19,6 +21,12 @@ private final class FakeBridge: Bridge {
+         calls.append("start \(handle) fd \(descriptor)")
+         if let startFailure { throw startFailure }
+     }
++    func dnsSettings(_ handle: Int32) throws -> String {
++        if let dnsFailure { throw dnsFailure }
++        var final = try JSONDecoder().decode(BridgeSettings.self, from: Data(settings.utf8))
++        final.dnsServers = servers
++        return String(decoding: try JSONEncoder().encode(final), as: UTF8.self)
++    }
+     func stop(_ handle: Int32) { calls.append("stop \(handle)") }
+     func status(_ handle: Int32, field: String) -> String { "status \(handle) \(field)" }
+     func networkChanged(_ handle: Int32, interface: String) { calls.append("interface \(interface)") }
+@@ -28,6 +36,7 @@ private final class FakeBridge: Bridge {
+ /// completion so a test decides when the utun exists.
+ private final class Fixture {
+     let bridge = FakeBridge()
++    var applications: [BridgeSettings] = []
+     var applied: ((Error?) -> Void)?
+     var monitoring = 0
+     var descriptor: Int32? = 4
+@@ -35,7 +44,8 @@ private final class Fixture {
+     lazy var tunnel = TunnelStart(
+         bridge: bridge,
+         host: TunnelHost(
+-            apply: { [unowned self] _, done in
++            apply: { [unowned self] settings, done in
++                self.applications.append(settings)
+                 self.bridge.calls.append("apply")
+                 self.applied = done
+             },
+@@ -47,6 +57,7 @@ private final class Fixture {
+             },
+             // The provider hops back to its lifecycle queue, and a test is on
+             // it.
++            failed: { [unowned self] error in self.completions.append(error) },
+             lifecycle: { $0() }))
+ 
+     func start(_ source: String = "main") {
+@@ -65,10 +76,11 @@ final class TunnelStartTests: XCTestCase {
+         let it = Fixture()
+         it.start()
+         it.applied?(nil)
++        it.applied?(nil)
+         XCTAssertNil(it.message())
+         XCTAssertEqual(it.tunnel.handle, 7)
+         // Monitoring feeds the engine its underlay before the routes go in.
+-        XCTAssertEqual(it.bridge.calls, ["prepare main", "monitor", "apply", "start 7 fd 4"])
++        XCTAssertEqual(it.bridge.calls, ["prepare main", "monitor", "apply", "start 7 fd 4", "apply"])
+         XCTAssertEqual(it.monitoring, 1)
+ 
+         it.tunnel.networkChanged("en0")
+@@ -122,6 +134,7 @@ final class TunnelStartTests: XCTestCase {
+             ("settings", { $0.bridge.settings = "not json" }, nil),
+             ("apply", { _ in }, Diagnostics.failure("settings were refused")),
+             ("descriptor", { $0.descriptor = nil }, nil),
++            ("DNS", { $0.bridge.dnsFailure = Diagnostics.failure("DNS compilation failed") }, nil),
+             ("engine", { $0.bridge.startFailure = Diagnostics.failure("engine refused") }, nil),
+         ]
+         for (name, arrange, failure) in cases {
+@@ -159,10 +172,88 @@ final class TunnelStartTests: XCTestCase {
+         XCTAssertEqual(it.tunnel.answer(Self.request("")).error, "not running")
+         it.start()
+         it.applied?(nil)
++        it.applied?(nil)
+         XCTAssertEqual(it.tunnel.answer(Self.request("listen-port")).status, "status 7 listen-port")
+         XCTAssertEqual(it.tunnel.answer(Data("{}".utf8)).error, "unsupported request")
+     }
+ 
++    func testFinalSettingsMustCompleteBeforeReadiness() {
++        let it = Fixture()
++        it.start()
++        it.applied?(nil)
++        XCTAssertTrue(it.completions.isEmpty)
++        it.applied?(Diagnostics.failure("final settings refused"))
++        XCTAssertEqual(it.message(), "final settings refused")
++        XCTAssertNil(it.tunnel.handle)
++        XCTAssertEqual(it.bridge.calls.last, "stop 7")
++    }
++
++    func testStopDuringFinalSettingsWaitsAndReleasesOnce() {
++        let it = Fixture()
++        it.start()
++        it.applied?(nil)
++        var stopped = 0
++        it.tunnel.stop { stopped += 1 }
++        XCTAssertEqual(stopped, 0)
++        it.applied?(nil)
++        XCTAssertEqual(stopped, 1)
++        XCTAssertNotNil(it.message())
++        XCTAssertEqual(it.bridge.calls.filter { $0 == "stop 7" }.count, 1)
++    }
++
++    func testRuntimeSettingsHoldAdmissionThroughStop() {
++        let it = Fixture()
++        it.start()
++        it.applied?(nil)
++        it.applied?(nil)
++        it.bridge.servers = ["192.0.2.54"]
++        it.tunnel.networkChanged("en1")
++        var stopped = 0
++        it.tunnel.stop { stopped += 1 }
++        XCTAssertEqual(stopped, 0)
++        it.applied?(nil)
++        XCTAssertEqual(stopped, 1)
++        XCTAssertNil(it.tunnel.handle)
++    }
++
++    func testPathChangesDuringFinalApplyRefreshDNSOnTheLatestPath() {
++        let it = Fixture()
++        it.start()
++        it.applied?(nil)
++        it.tunnel.networkChanged("")
++        it.bridge.servers = ["192.0.2.54"]
++        it.tunnel.networkChanged("en1")
++        XCTAssertEqual(it.bridge.calls.suffix(2), ["interface ", "interface en1"])
++        XCTAssertEqual(it.applications.map(\.dnsServers), [nil, ["192.0.2.53"]])
++
++        it.applied?(nil)
++        XCTAssertNil(it.message())
++        XCTAssertEqual(it.applications.map(\.dnsServers), [nil, ["192.0.2.53"], ["192.0.2.54"]])
++        it.applied?(nil)
++        it.tunnel.networkChanged("en1")
++        XCTAssertEqual(it.applications.count, 3)
++    }
++
++    func testIdenticalFinalSettingsCompleteAtBootstrap() {
++        let it = Fixture()
++        it.bridge.servers = nil
++        it.start()
++        it.applied?(nil)
++        XCTAssertNil(it.message())
++        XCTAssertEqual(it.applications.count, 1)
++    }
++
++    func testRuntimeDNSReadFailureTerminatesTheProvider() {
++        let it = Fixture()
++        it.start()
++        it.applied?(nil)
++        it.applied?(nil)
++        it.bridge.dnsFailure = Diagnostics.failure("underlying DNS unavailable")
++        it.tunnel.networkChanged("en1")
++        XCTAssertNil(it.tunnel.handle)
++        XCTAssertEqual(it.completions.last??.localizedDescription, "underlying DNS unavailable")
++    }
++
+     private static func request(_ field: String) -> Data {
+         try! JSONEncoder().encode(ProviderRequest(statusField: field))
+     }

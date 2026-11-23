@@ -137,17 +137,19 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 	knobs.ForceRegisterMagicDNSIPv4Only.Store(!slices.ContainsFunc(cfg.Interface.Addresses,
 		func(p netip.Prefix) bool { return p.Addr().Is6() }))
 	knobs.ScopeQuad100OnMacOS.Store(true)
+	servers := cfg.DNSServiceIPs()
 	conf := wgengine.Config{
-		Tun:           dev,
-		Router:        rtr,
-		ControlKnobs:  knobs,
-		NetMon:        e.netMon,
-		HealthTracker: tracker,
-		Metrics:       new(usermetric.Registry),
-		Dialer:        e.dialer,
-		EventBus:      e.bus,
-		ListenPort:    cfg.Interface.ListenPort,
-		ForceDiscoKey: discokey.PrivateForNode(cfg.Interface.PrivateKey),
+		DNSServiceAddrs: servers,
+		Tun:             dev,
+		Router:          rtr,
+		ControlKnobs:    knobs,
+		NetMon:          e.netMon,
+		HealthTracker:   tracker,
+		Metrics:         new(usermetric.Registry),
+		Dialer:          e.dialer,
+		EventBus:        e.bus,
+		ListenPort:      cfg.Interface.ListenPort,
+		ForceDiscoKey:   discokey.PrivateForNode(cfg.Interface.PrivateKey),
 		// The app name identifies Headwire to DERP operators.
 		DERPAppName: "headwire",
 		SetSubsystem: func(s any) {
@@ -162,7 +164,7 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 		},
 	}
 	if e.hostDNS != nil {
-		e.hostDNS = &managedDNS{os: e.hostDNS, servers: cfg.DNSServiceIPs()}
+		e.hostDNS = &managedDNS{os: e.hostDNS}
 		conf.DNS = e.hostDNS
 	}
 	if e.eng, err = wgengine.NewUserspaceEngine(logf, conf); err != nil {
@@ -181,7 +183,7 @@ func Start(cfg *config.Config, logf logger.Logf, opts Options) (_ *Engine, err e
 	if port := cfg.Interface.ListenPort; port != 0 && e.mc.LocalPort() != port {
 		return nil, fmt.Errorf("UDP port %d: address already in use", port)
 	}
-	if servers := cfg.DNSServiceIPs(); len(servers) > 0 {
+	if len(servers) > 0 {
 		e.dnsService, err = newDNSService(e.dnsManager, e.tun, servers, MTU(cfg), logf)
 		if err != nil {
 			return nil, err

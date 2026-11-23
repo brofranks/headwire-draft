@@ -1,0 +1,53 @@
+name: DNS integration
+on:
+  push:
+    branches: [validation/dns-gvisor-20261123]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  host:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - run: bash .github/dns-check/prepare.sh
+      - name: Host DNS through the kernel tunnel
+        run: |
+          source scripts/goflags.sh
+          go build -o "$RUNNER_TEMP/headwire" ./cmd/headwire
+          sudo python3 .github/dns-check/host.py "$RUNNER_TEMP/headwire"
+  swift:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: brofranks/headwire-apple
+          ref: 56c44750f56c1d964d64051132ab9cef34461afb
+          path: apple
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - run: bash .github/dns-check/prepare.sh
+      - name: Compile the Go bridge and run the Swift suite
+        run: |
+          git -C apple apply "$PWD/.github/dns-check/apple.patch"
+          cd apple
+          xcrun swift-format lint --strict -r App CLI Controller Extension Provider Shared iOS Tests
+          HEADWIRE="$GITHUB_WORKSPACE" ./build.sh test CODE_SIGNING_ALLOWED=NO

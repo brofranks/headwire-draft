@@ -56,10 +56,42 @@ func dnsConfig(cfg *config.Config) *dns.Config {
 	for suffix, addrs := range cfg.DNS.Routes {
 		c.Routes[suffix] = resolvers(addrs)
 	}
-	for host := range cfg.DNS.Hosts {
+	for host, addrs := range cfg.DNS.Hosts {
 		c.Routes[host] = nil
+		for _, ip := range addrs {
+			ptr := reverseDNSName(ip)
+			// An explicit reverse route already delivers the PTR to the
+			// resolver and controls forwarding for other record types.
+			if !hasDNSRoute(cfg.DNS.Routes, ptr) {
+				c.Routes[ptr] = nil
+			}
+		}
 	}
 	return c
+}
+
+func hasDNSRoute(routes map[dnsname.FQDN][]netip.Addr, name dnsname.FQDN) bool {
+	for ; name != ""; name = name.Parent() {
+		if _, ok := routes[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// reverseDNSName returns the PTR owner for the address as stored in Hosts.
+func reverseDNSName(ip netip.Addr) dnsname.FQDN {
+	if ip.Is4() {
+		b := ip.As4()
+		return dnsname.FQDN(fmt.Sprintf("%d.%d.%d.%d.in-addr.arpa.", b[3], b[2], b[1], b[0]))
+	}
+	b := ip.As16()
+	const hex = "0123456789abcdef"
+	name := make([]byte, 0, 64+len("ip6.arpa."))
+	for i := len(b) - 1; i >= 0; i-- {
+		name = append(name, hex[b[i]&15], '.', hex[b[i]>>4], '.')
+	}
+	return dnsname.FQDN(append(name, "ip6.arpa."...))
 }
 
 // dnsService terminates virtual DNS traffic from the host. Its stack owns

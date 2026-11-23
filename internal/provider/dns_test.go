@@ -15,6 +15,8 @@ import (
 )
 
 func TestManagedDNSSettings(t *testing.T) {
+	const ptr4 = "1.2.0.192.in-addr.arpa"
+	const ptr6 = "4.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
 	for _, tc := range []struct {
 		name, addresses, policy string
 		servers, match          []string
@@ -22,9 +24,9 @@ func TestManagedDNSSettings(t *testing.T) {
 		{"none", "100.64.0.1/32", "", nil, nil},
 
 		{"direct", "100.64.0.1/32", "DNS = 192.0.2.53\n", []string{"192.0.2.53"}, nil},
-		{"host", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53"}, []string{"host.example"}},
-		{"host6", "fd00::1/128", "[DNS]\nAddress = fd00::53\nHost = host.example 192.0.2.1\n", []string{"fd00::53"}, []string{"host.example"}},
-		{"dual", "100.64.0.1/32, fd00::1/128", "[DNS]\nAddress = 100.64.0.53, fd00::53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53", "fd00::53"}, []string{"host.example"}},
+		{"host", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53"}, []string{ptr4, "host.example"}},
+		{"host6", "fd00::1/128", "[DNS]\nAddress = fd00::53\nHost = host.example 192.0.2.1\n", []string{"fd00::53"}, []string{ptr4, "host.example"}},
+		{"dual", "100.64.0.1/32, fd00::1/128", "[DNS]\nAddress = 100.64.0.53, fd00::53\nHost = host.example 192.0.2.1 2001:db8::54\n", []string{"100.64.0.53", "fd00::53"}, []string{ptr4, ptr6, "host.example"}},
 		{"route", "100.64.0.1/32", "[DNS]\nAddress = 100.64.0.53\nRoute = corp.example 192.0.2.53\n", []string{"192.0.2.53"}, []string{"corp.example"}},
 		{"proxy", "100.64.0.1/32", "DNS = 192.0.2.53\n[DNS]\nAddress = 100.64.0.53\nHost = host.example 192.0.2.1\n", []string{"100.64.0.53"}, nil},
 	} {
